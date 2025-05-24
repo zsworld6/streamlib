@@ -3,8 +3,14 @@ import json
 import os
 from pathlib import Path
 import base64
-from PIL import Image
-import io
+from datetime import datetime
+
+# 可选导入 Pillow
+try:
+    from PIL import Image
+    PILLOW_AVAILABLE = True
+except ImportError:
+    PILLOW_AVAILABLE = False
 
 # 页面配置
 st.set_page_config(
@@ -26,6 +32,24 @@ st.markdown("""
         margin-bottom: 2rem;
     }
     
+    .warning-box {
+        background-color: #fff3cd;
+        border: 1px solid #ffeaa7;
+        border-radius: 5px;
+        padding: 1rem;
+        margin: 1rem 0;
+        color: #856404;
+    }
+    
+    .info-box {
+        background-color: #d1ecf1;
+        border: 1px solid #bee5eb;
+        border-radius: 5px;
+        padding: 1rem;
+        margin: 1rem 0;
+        color: #0c5460;
+    }
+    
     .label-button {
         display: inline-block;
         padding: 0.5rem 1rem;
@@ -37,12 +61,6 @@ st.markdown("""
         color: #333;
         font-weight: 500;
         transition: all 0.3s ease;
-    }
-    
-    .label-button:hover {
-        background-color: #667eea;
-        color: white;
-        border-color: #667eea;
     }
     
     .current-label {
@@ -91,25 +109,11 @@ st.markdown("""
         font-size: 0.9rem;
         color: #666;
     }
-    
-    .html-preview {
-        background-color: #1e1e1e;
-        color: #d4d4d4;
-        padding: 1rem;
-        border-radius: 5px;
-        font-family: 'Courier New', monospace;
-        font-size: 0.8rem;
-        max-height: 300px;
-        overflow-y: auto;
-        white-space: pre-wrap;
-        border: 1px solid #333;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # 数据文件路径
 DATA_FILE = 'data.json'
-LABELS_FILE = 'labels.json'
 
 @st.cache_data
 def load_data():
@@ -121,49 +125,45 @@ def load_data():
     with open(DATA_FILE, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def load_labels():
-    """加载标注数据"""
-    if os.path.exists(LABELS_FILE):
-        try:
-            with open(LABELS_FILE, 'r', encoding='utf-8') as f:
-                labels_data = json.load(f)
-                # 转换为字典格式 {index: label}
-                if isinstance(labels_data, list):
-                    return {item.get("index", i): item.get("label", "") for i, item in enumerate(labels_data)}
-                return labels_data
-        except Exception as e:
-            st.error(f"加载标注文件出错：{e}")
-    return {}
+def init_session_labels(total_images):
+    """初始化 session state 中的标注数据"""
+    if 'labels_dict' not in st.session_state:
+        st.session_state.labels_dict = {}
+    
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-def save_labels(labels_dict, image_data):
-    """保存标注数据"""
-    try:
-        # 创建完整的标注数据
-        labels_data = []
-        for i, item in enumerate(image_data):
-            labels_data.append({
-                "index": i,
-                "image": item["image"],
-                "html": item["html"],
-                "label": labels_dict.get(i, "")
-            })
-        
-        with open(LABELS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(labels_data, f, ensure_ascii=False, indent=2)
-        return True
-    except Exception as e:
-        st.error(f"保存标注失败：{e}")
-        return False
+def export_labels_data(labels_dict, image_data):
+    """生成导出数据"""
+    labels_data = []
+    for i, item in enumerate(image_data):
+        labels_data.append({
+            "index": i,
+            "image": item["image"],
+            "html": item["html"],
+            "label": labels_dict.get(i, ""),
+            "session_id": st.session_state.session_id,
+            "timestamp": datetime.now().isoformat()
+        })
+    return labels_data
 
-def get_image_base64(image_path):
-    """获取图片的base64编码（如果是本地文件）"""
+def display_image(image_path, caption):
+    """显示图片，兼容有无 Pillow 的情况"""
     try:
         if os.path.exists(image_path):
-            with open(image_path, "rb") as img_file:
-                return base64.b64encode(img_file.read()).decode()
-    except:
-        pass
-    return None
+            if PILLOW_AVAILABLE:
+                image = Image.open(image_path)
+                st.image(image, use_container_width=True, caption=caption)
+            else:
+                st.image(image_path, use_container_width=True, caption=caption)
+        elif image_path.startswith(('http://', 'https://')):
+            st.image(image_path, use_container_width=True, caption=caption)
+        else:
+            st.error("无法加载图片")
+            st.write(f"图片路径: {image_path}")
+    except Exception as e:
+        st.error(f"图片加载失败: {e}")
+        st.write(f"图片路径: {image_path}")
 
 def main():
     # 页面标题
@@ -174,14 +174,23 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
+    # 重要提示
+    st.markdown("""
+    <div class="warning-box">
+        <strong>⚠️ 重要提示：</strong> 本应用部署在 Streamlit Cloud 上，标注数据仅在当前会话中保存。
+        请在完成标注后及时下载数据，应用重启后数据将丢失！
+    </div>
+    """, unsafe_allow_html=True)
+    
     # 加载数据
     image_data = load_data()
     if not image_data:
         st.stop()
     
-    labels_dict = load_labels()
+    # 初始化 session state
+    total_images = len(image_data)
+    init_session_labels(total_images)
     
-    # 初始化session state
     if 'current_index' not in st.session_state:
         st.session_state.current_index = 0
     
@@ -189,8 +198,16 @@ def main():
     with st.sidebar:
         st.header("🎯 控制面板")
         
+        # 会话信息
+        st.markdown(f"""
+        <div class="info-box">
+            <strong>📅 会话ID：</strong> {st.session_state.session_id}<br>
+            <strong>⏰ 开始时间：</strong> {st.session_state.session_id[:8]}_{st.session_state.session_id[9:]}
+        </div>
+        """, unsafe_allow_html=True)
+        
         # 进度统计
-        total_images = len(image_data)
+        labels_dict = st.session_state.labels_dict
         labeled_count = sum(1 for label in labels_dict.values() if label)
         progress = labeled_count / total_images if total_images > 0 else 0
         
@@ -238,12 +255,16 @@ def main():
                     st.rerun()
         
         # 快速跳转
-        st.session_state.current_index = st.number_input(
+        new_index = st.number_input(
             "跳转到图片", 
             min_value=1, 
             max_value=total_images, 
             value=st.session_state.current_index + 1
         ) - 1
+        
+        if new_index != st.session_state.current_index:
+            st.session_state.current_index = new_index
+            st.rerun()
         
         st.markdown("---")
         
@@ -259,19 +280,26 @@ def main():
         
         st.markdown("---")
         
-        # 导出数据
-        st.subheader("💾 数据管理")
-        if st.button("📥 导出标注数据", use_container_width=True):
-            if save_labels(labels_dict, image_data):
-                with open(LABELS_FILE, 'r', encoding='utf-8') as f:
-                    st.download_button(
-                        label="⬇️ 下载 labels.json",
-                        data=f.read(),
-                        file_name="labels.json",
-                        mime="application/json",
-                        use_container_width=True
-                    )
-                st.success("✅ 数据导出成功！")
+        # 数据导出
+        st.subheader("💾 数据导出")
+        
+        if labeled_count > 0:
+            export_data = export_labels_data(labels_dict, image_data)
+            json_str = json.dumps(export_data, ensure_ascii=False, indent=2)
+            
+            st.download_button(
+                label=f"📥 下载标注数据 ({labeled_count} 条)",
+                data=json_str,
+                file_name=f"labels_{st.session_state.session_id}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+            
+            # 显示导出预览
+            with st.expander("📋 导出数据预览"):
+                st.json(export_data[:3])  # 只显示前3条
+        else:
+            st.info("还没有标注数据可导出")
     
     # 主内容区域
     current_item = image_data[st.session_state.current_index]
@@ -305,8 +333,7 @@ def main():
         col = [col1, col2, col3, col4][i % 4]
         with col:
             if st.button(display_text, use_container_width=True):
-                labels_dict[st.session_state.current_index] = label_value
-                save_labels(labels_dict, image_data)
+                st.session_state.labels_dict[st.session_state.current_index] = label_value
                 st.success(f"✅ 已标注为: {label_value if label_value else '清除标注'}")
                 st.rerun()
     
@@ -317,51 +344,46 @@ def main():
     
     with col_img:
         st.subheader("🖼️ 当前图片")
-        
-        image_path = current_item["image"]
-        
-        # 尝试显示图片
-        try:
-            if os.path.exists(image_path):
-                # 本地文件
-                image = Image.open(image_path)
-                st.image(image, use_container_width=True, caption=f"图片 {st.session_state.current_index + 1}")
-            elif image_path.startswith(('http://', 'https://')):
-                # 网络图片
-                st.image(image_path, use_container_width=True, caption=f"图片 {st.session_state.current_index + 1}")
-            else:
-                st.error("无法加载图片")
-                st.write(f"图片路径: {image_path}")
-        except Exception as e:
-            st.error(f"图片加载失败: {e}")
-            st.write(f"图片路径: {image_path}")
+        display_image(current_item["image"], f"图片 {st.session_state.current_index + 1}")
     
     with col_html:
         st.subheader("📄 HTML 内容")
-        
         html_content = current_item.get("html", "")
         
-        # 显示HTML内容的前1000个字符
         if html_content:
-            preview_content = html_content[:1000] + "..." if len(html_content) > 1000 else html_content
-            st.markdown(f'<div class="html-preview">{preview_content}</div>', unsafe_allow_html=True)
+            # 显示HTML内容的前500个字符
+            preview_content = html_content[:500] + "..." if len(html_content) > 500 else html_content
+            st.code(preview_content, language="html")
             
             # 显示完整HTML的展开选项
-            if len(html_content) > 1000:
+            if len(html_content) > 500:
                 with st.expander("查看完整HTML内容"):
-                    st.text(html_content)
+                    st.code(html_content, language="html")
         else:
             st.info("此图片没有关联的HTML内容")
     
-    # 键盘快捷键提示
-    with st.expander("⌨️ 键盘快捷键"):
+    # 使用说明
+    with st.expander("📖 使用说明"):
         st.markdown("""
-        - **数字键 1-7**: 快速标注对应分类
-        - **左右方向键**: 切换图片（需要刷新页面生效）
+        ### 🎯 标注流程
+        1. 查看当前图片和相关HTML内容
+        2. 点击对应的分类按钮进行标注
+        3. 使用导航按钮切换到下一张图片
+        4. 完成后点击"下载标注数据"保存结果
         
-        **分类对应数字:**
-        1. 数学  2. 物理  3. 化学  4. 生命
-        5. 地球  6. 材料  7. 其他
+        ### ⚠️ 重要提醒
+        - 本应用数据仅在当前浏览器会话中保存
+        - 刷新页面或关闭浏览器会导致数据丢失
+        - 请及时下载标注结果
+        
+        ### 📋 分类说明
+        - **数学**: 数学公式、计算器、数学教学内容
+        - **物理**: 物理实验、公式、教学内容
+        - **化学**: 化学方程式、实验、教学内容
+        - **生命**: 生物学、医学相关内容
+        - **地球**: 地理、地质、环境科学
+        - **材料**: 材料科学、工程相关
+        - **其他**: 不属于以上分类的内容
         """)
 
 if __name__ == "__main__":
