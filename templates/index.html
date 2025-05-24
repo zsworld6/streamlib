@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>图片标注工具</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    .container {
+      width: 80%;
+      max-width: 900px;
+      margin: 20px auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    #image {
+      max-width: 100%;
+      height: auto;
+      margin-bottom: 15px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .buttons, .nav-buttons, .label-info {
+      margin-bottom: 10px;
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+    .buttons button, .nav-buttons button {
+      padding: 8px 16px;
+      cursor: pointer;
+      border: 1px solid #007bff;
+      background-color: #f0f8ff;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: background-color 0.3s ease;
+    }
+    .buttons button:hover, .nav-buttons button:hover {
+      background-color: #007bff;
+      color: white;
+    }
+    .label-info {
+      font-weight: bold;
+      justify-content: center;
+    }
+    #html-content {
+      width: 100%;
+      white-space: pre-wrap;
+      border: 1px solid #ccc;
+      background: #f9f9f9;
+      padding: 10px;
+      font-family: monospace;
+      border-radius: 4px;
+      min-height: 120px;
+      box-sizing: border-box;
+      overflow-y: auto;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>图片标注（共 <span id="total">{{ total }}</span> 张）</h2>
+
+    <!-- 按钮组（含标注按钮 + 导出） -->
+    <div class="buttons">
+      <button onclick="selectLabel('数学')">数学</button>
+      <button onclick="selectLabel('物理')">物理</button>
+      <button onclick="selectLabel('化学')">化学</button>
+      <button onclick="selectLabel('生命')">生命</button>
+      <button onclick="selectLabel('地球')">地球</button>
+      <button onclick="selectLabel('材料')">材料</button>
+      <button onclick="selectLabel('其他')">其他</button>
+      <button onclick="exportLabels()">导出标注</button>
+    </div>
+
+    <!-- 翻页按钮 -->
+    <div class="nav-buttons">
+      <button onclick="prev()">上一张</button>
+      <button onclick="next()">下一张</button>
+    </div>
+
+    <!-- 当前标注显示 -->
+    <div class="label-info">
+      当前标注：<span id="current-label">未标注</span>
+    </div>
+
+    <!-- 图片 -->
+    <img id="image" src="" alt="图片加载失败" />
+
+    <!-- HTML文本，放在最下面 -->
+    <div id="html-content"></div>
+  </div>
+
+  <script>
+    let currentIndex = 0;
+    let total = {{ total }};
+
+    function load(index) {
+      fetch(`/get_data?index=${index}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) return alert(data.error);
+          currentIndex = data.index;
+          document.getElementById("image").src = data.image;
+          document.getElementById("html-content").textContent = data.html; // 纯文本显示
+          document.getElementById("current-label").textContent = data.label || "未标注";
+        });
+    }
+
+    function selectLabel(label) {
+      fetch('/submit_label', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: currentIndex, label: label })
+      }).then(res => res.json()).then(() => {
+        document.getElementById("current-label").textContent = label;
+      });
+    }
+
+    function prev() {
+      if (currentIndex > 0) load(currentIndex - 1);
+    }
+
+    function next() {
+      if (currentIndex < total - 1) load(currentIndex + 1);
+    }
+
+    function exportLabels() {
+      fetch('/export_labels')
+        .then(res => res.blob())
+        .then(blob => {
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'labels.json';
+          a.click();
+          window.URL.revokeObjectURL(url);
+        });
+    }
+
+    // 初始化加载第0张
+    load(0);
+  </script>
+</body>
+</html>
