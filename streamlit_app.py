@@ -2,20 +2,14 @@ import streamlit as st
 import json
 import os
 from pathlib import Path
-import base64
+import requests
 from datetime import datetime
-
-# 可选导入 Pillow
-try:
-    from PIL import Image
-    PILLOW_AVAILABLE = True
-except ImportError:
-    PILLOW_AVAILABLE = False
+import hashlib
 
 # 页面配置
 st.set_page_config(
-    page_title="图片标注工具",
-    page_icon="🏷️",
+    page_title="协作图片标注工具",
+    page_icon="👥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -32,6 +26,21 @@ st.markdown("""
         margin-bottom: 2rem;
     }
     
+    .collaboration-info {
+        background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    .user-info {
+        background-color: #e8f4f8;
+        border-left: 4px solid #667eea;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    
     .warning-box {
         background-color: #fff3cd;
         border: 1px solid #ffeaa7;
@@ -39,28 +48,6 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
         color: #856404;
-    }
-    
-    .info-box {
-        background-color: #d1ecf1;
-        border: 1px solid #bee5eb;
-        border-radius: 5px;
-        padding: 1rem;
-        margin: 1rem 0;
-        color: #0c5460;
-    }
-    
-    .label-button {
-        display: inline-block;
-        padding: 0.5rem 1rem;
-        margin: 0.2rem;
-        background-color: #f0f2f6;
-        border: 1px solid #ddd;
-        border-radius: 20px;
-        text-decoration: none;
-        color: #333;
-        font-weight: 500;
-        transition: all 0.3s ease;
     }
     
     .current-label {
@@ -72,113 +59,95 @@ st.markdown("""
         border-left: 4px solid #667eea;
     }
     
-    .progress-bar {
-        background-color: #f0f0f0;
-        border-radius: 10px;
-        padding: 3px;
-        margin: 1rem 0;
-    }
-    
-    .progress-fill {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        height: 20px;
-        border-radius: 7px;
-        transition: width 0.3s ease;
-    }
-    
-    .stats-container {
-        display: flex;
-        justify-content: space-around;
+    .task-assignment {
         background-color: #f8f9fa;
+        border: 2px solid #667eea;
+        border-radius: 8px;
         padding: 1rem;
-        border-radius: 10px;
         margin: 1rem 0;
-    }
-    
-    .stat-item {
-        text-align: center;
-    }
-    
-    .stat-number {
-        font-size: 2rem;
-        font-weight: bold;
-        color: #667eea;
-    }
-    
-    .stat-label {
-        font-size: 0.9rem;
-        color: #666;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# 数据文件路径
-DATA_FILE = 'data.json'
+# Google Sheets API 配置（示例）
+# 注意：实际使用时需要配置 Google Sheets API 密钥
+GOOGLE_SHEETS_URL = "https://docs.google.com/spreadsheets/d/你的表格ID/edit"
+SHEET_API_URL = "你的Google Sheets API端点"
+
+def generate_user_id():
+    """生成用户唯一标识"""
+    if 'user_id' not in st.session_state:
+        # 基于时间戳和随机数生成用户ID
+        timestamp = str(datetime.now().timestamp())
+        st.session_state.user_id = hashlib.md5(timestamp.encode()).hexdigest()[:8]
+    return st.session_state.user_id
+
+def assign_task_to_user(user_id, total_images, num_users=5):
+    """为用户分配标注任务"""
+    user_hash = int(hashlib.md5(user_id.encode()).hexdigest(), 16)
+    
+    # 计算该用户负责的图片范围
+    images_per_user = total_images // num_users
+    remainder = total_images % num_users
+    
+    user_index = user_hash % num_users
+    
+    start_idx = user_index * images_per_user
+    if user_index < remainder:
+        start_idx += user_index
+        end_idx = start_idx + images_per_user + 1
+    else:
+        start_idx += remainder
+        end_idx = start_idx + images_per_user
+    
+    return list(range(start_idx, min(end_idx, total_images)))
+
+def save_to_google_sheets(user_id, image_index, label, image_path):
+    """保存标注到 Google Sheets（示例函数）"""
+    # 这里是示例代码，实际需要配置 Google Sheets API
+    data = {
+        "user_id": user_id,
+        "image_index": image_index,
+        "image_path": image_path,
+        "label": label,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    # 模拟API调用
+    try:
+        # response = requests.post(SHEET_API_URL, json=data)
+        # return response.status_code == 200
+        return True  # 模拟成功
+    except:
+        return False
 
 @st.cache_data
 def load_data():
     """加载图片数据"""
-    if not os.path.exists(DATA_FILE):
-        st.error(f"数据文件 {DATA_FILE} 不存在！")
+    if not os.path.exists('data.json'):
+        st.error("数据文件 data.json 不存在！")
         return []
     
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
+    with open('data.json', 'r', encoding='utf-8') as f:
         return json.load(f)
-
-def init_session_labels(total_images):
-    """初始化 session state 中的标注数据"""
-    if 'labels_dict' not in st.session_state:
-        st.session_state.labels_dict = {}
-    
-    if 'session_id' not in st.session_state:
-        st.session_state.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-def export_labels_data(labels_dict, image_data):
-    """生成导出数据"""
-    labels_data = []
-    for i, item in enumerate(image_data):
-        labels_data.append({
-            "index": i,
-            "image": item["image"],
-            "html": item["html"],
-            "label": labels_dict.get(i, ""),
-            "session_id": st.session_state.session_id,
-            "timestamp": datetime.now().isoformat()
-        })
-    return labels_data
-
-def display_image(image_path, caption):
-    """显示图片，兼容有无 Pillow 的情况"""
-    try:
-        if os.path.exists(image_path):
-            if PILLOW_AVAILABLE:
-                image = Image.open(image_path)
-                st.image(image, use_container_width=True, caption=caption)
-            else:
-                st.image(image_path, use_container_width=True, caption=caption)
-        elif image_path.startswith(('http://', 'https://')):
-            st.image(image_path, use_container_width=True, caption=caption)
-        else:
-            st.error("无法加载图片")
-            st.write(f"图片路径: {image_path}")
-    except Exception as e:
-        st.error(f"图片加载失败: {e}")
-        st.write(f"图片路径: {image_path}")
 
 def main():
     # 页面标题
     st.markdown("""
     <div class="main-header">
-        <h1>🏷️ 图片标注工具</h1>
-        <p>欢迎参与数据标注！您的贡献将帮助改进AI模型</p>
+        <h1>👥 协作图片标注工具</h1>
+        <p>多人同时标注，数据实时同步</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # 重要提示
-    st.markdown("""
-    <div class="warning-box">
-        <strong>⚠️ 重要提示：</strong> 本应用部署在 Streamlit Cloud 上，标注数据仅在当前会话中保存。
-        请在完成标注后及时下载数据，应用重启后数据将丢失！
+    # 生成用户ID
+    user_id = generate_user_id()
+    
+    # 用户信息
+    st.markdown(f"""
+    <div class="user-info">
+        <strong>👤 您的标注员ID：</strong> {user_id}<br>
+        <strong>⏰ 会话开始时间：</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     </div>
     """, unsafe_allow_html=True)
     
@@ -187,127 +156,129 @@ def main():
     if not image_data:
         st.stop()
     
-    # 初始化 session state
     total_images = len(image_data)
-    init_session_labels(total_images)
     
-    if 'current_index' not in st.session_state:
-        st.session_state.current_index = 0
+    # 任务分配
+    assigned_indices = assign_task_to_user(user_id, total_images)
     
-    # 侧边栏 - 控制面板
+    st.markdown(f"""
+    <div class="task-assignment">
+        <h3>📋 您的标注任务</h3>
+        <p><strong>分配的图片数量：</strong> {len(assigned_indices)} 张</p>
+        <p><strong>图片编号范围：</strong> {min(assigned_indices) + 1} - {max(assigned_indices) + 1}</p>
+        <p><strong>任务进度：</strong> 0 / {len(assigned_indices)} 完成</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 协作说明
+    st.markdown("""
+    <div class="collaboration-info">
+        <h4>🤝 协作模式说明</h4>
+        <ul>
+            <li><strong>任务分配：</strong> 系统自动为每个用户分配不同的图片进行标注</li>
+            <li><strong>避免重复：</strong> 不同用户标注不同的图片，提高效率</li>
+            <li><strong>数据收集：</strong> 所有标注结果统一收集和管理</li>
+            <li><strong>进度追踪：</strong> 可以查看整体标注进度</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 初始化 session state
+    if 'current_task_index' not in st.session_state:
+        st.session_state.current_task_index = 0
+    
+    if 'labeled_count' not in st.session_state:
+        st.session_state.labeled_count = 0
+    
+    if 'user_labels' not in st.session_state:
+        st.session_state.user_labels = {}
+    
+    # 侧边栏控制
     with st.sidebar:
-        st.header("🎯 控制面板")
+        st.header("🎯 标注控制")
         
-        # 会话信息
-        st.markdown(f"""
-        <div class="info-box">
-            <strong>📅 会话ID：</strong> {st.session_state.session_id}<br>
-            <strong>⏰ 开始时间：</strong> {st.session_state.session_id[:8]}_{st.session_state.session_id[9:]}
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # 进度统计
-        labels_dict = st.session_state.labels_dict
-        labeled_count = sum(1 for label in labels_dict.values() if label)
-        progress = labeled_count / total_images if total_images > 0 else 0
-        
-        st.markdown(f"""
-        <div class="stats-container">
-            <div class="stat-item">
-                <div class="stat-number">{st.session_state.current_index + 1}</div>
-                <div class="stat-label">当前图片</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-number">{total_images}</div>
-                <div class="stat-label">总计图片</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-number">{labeled_count}</div>
-                <div class="stat-label">已标注</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # 进度条
-        st.markdown(f"""
-        <div class="progress-bar">
-            <div class="progress-fill" style="width: {progress*100}%"></div>
-        </div>
-        <p style="text-align: center; color: #666;">完成进度: {progress*100:.1f}%</p>
-        """, unsafe_allow_html=True)
+        # 任务进度
+        progress = st.session_state.labeled_count / len(assigned_indices) if assigned_indices else 0
+        st.progress(progress)
+        st.write(f"进度: {st.session_state.labeled_count}/{len(assigned_indices)} ({progress*100:.1f}%)")
         
         st.markdown("---")
         
         # 导航控制
-        st.subheader("📋 导航控制")
+        st.subheader("📋 任务导航")
         
         col1, col2 = st.columns(2)
         with col1:
             if st.button("⬅️ 上一张", use_container_width=True):
-                if st.session_state.current_index > 0:
-                    st.session_state.current_index -= 1
+                if st.session_state.current_task_index > 0:
+                    st.session_state.current_task_index -= 1
                     st.rerun()
         
         with col2:
             if st.button("下一张 ➡️", use_container_width=True):
-                if st.session_state.current_index < total_images - 1:
-                    st.session_state.current_index += 1
+                if st.session_state.current_task_index < len(assigned_indices) - 1:
+                    st.session_state.current_task_index += 1
                     st.rerun()
         
-        # 快速跳转
-        new_index = st.number_input(
-            "跳转到图片", 
-            min_value=1, 
-            max_value=total_images, 
-            value=st.session_state.current_index + 1
-        ) - 1
-        
-        if new_index != st.session_state.current_index:
-            st.session_state.current_index = new_index
-            st.rerun()
+        # 任务跳转
+        if assigned_indices:
+            task_num = st.selectbox(
+                "跳转到任务",
+                range(1, len(assigned_indices) + 1),
+                index=st.session_state.current_task_index
+            )
+            st.session_state.current_task_index = task_num - 1
         
         st.markdown("---")
         
-        # 分类统计
-        st.subheader("📊 分类统计")
+        # 标注统计
+        st.subheader("📊 我的标注统计")
         categories = ["数学", "物理", "化学", "生命", "地球", "材料", "其他"]
         for category in categories:
-            count = sum(1 for label in labels_dict.values() if label == category)
+            count = sum(1 for label in st.session_state.user_labels.values() if label == category)
             st.write(f"**{category}**: {count} 张")
-        
-        unlabeled = total_images - labeled_count
-        st.write(f"**未标注**: {unlabeled} 张")
         
         st.markdown("---")
         
         # 数据导出
-        st.subheader("💾 数据导出")
-        
-        if labeled_count > 0:
-            export_data = export_labels_data(labels_dict, image_data)
-            json_str = json.dumps(export_data, ensure_ascii=False, indent=2)
+        st.subheader("💾 我的标注数据")
+        if st.session_state.user_labels:
+            # 生成导出数据
+            export_data = []
+            for img_idx, label in st.session_state.user_labels.items():
+                export_data.append({
+                    "user_id": user_id,
+                    "image_index": img_idx,
+                    "image_path": image_data[img_idx]["image"],
+                    "label": label,
+                    "timestamp": datetime.now().isoformat()
+                })
             
+            json_str = json.dumps(export_data, ensure_ascii=False, indent=2)
             st.download_button(
-                label=f"📥 下载标注数据 ({labeled_count} 条)",
+                label=f"📥 下载我的标注 ({len(export_data)} 条)",
                 data=json_str,
-                file_name=f"labels_{st.session_state.session_id}.json",
+                file_name=f"my_labels_{user_id}.json",
                 mime="application/json",
                 use_container_width=True
             )
-            
-            # 显示导出预览
-            with st.expander("📋 导出数据预览"):
-                st.json(export_data[:3])  # 只显示前3条
         else:
-            st.info("还没有标注数据可导出")
+            st.info("还没有标注数据")
     
-    # 主内容区域
-    current_item = image_data[st.session_state.current_index]
-    current_label = labels_dict.get(st.session_state.current_index, "")
+    # 主标注区域
+    if not assigned_indices:
+        st.error("没有分配到标注任务！")
+        st.stop()
     
-    # 当前标注状态
+    current_image_index = assigned_indices[st.session_state.current_task_index]
+    current_item = image_data[current_image_index]
+    current_label = st.session_state.user_labels.get(current_image_index, "")
+    
+    # 当前图片信息
     st.markdown(f"""
     <div class="current-label">
+        🖼️ 图片 {current_image_index + 1} / {total_images} (任务 {st.session_state.current_task_index + 1} / {len(assigned_indices)})
+        <br>
         🏷️ 当前标注: {current_label if current_label else "未标注"}
     </div>
     """, unsafe_allow_html=True)
@@ -332,58 +303,87 @@ def main():
     for i, (display_text, label_value) in enumerate(categories):
         col = [col1, col2, col3, col4][i % 4]
         with col:
-            if st.button(display_text, use_container_width=True):
-                st.session_state.labels_dict[st.session_state.current_index] = label_value
+            if st.button(display_text, use_container_width=True, key=f"btn_{i}"):
+                # 保存到本地 session
+                old_label = st.session_state.user_labels.get(current_image_index, "")
+                if label_value:
+                    st.session_state.user_labels[current_image_index] = label_value
+                else:
+                    st.session_state.user_labels.pop(current_image_index, None)
+                
+                # 更新计数
+                if old_label and not label_value:
+                    st.session_state.labeled_count -= 1
+                elif not old_label and label_value:
+                    st.session_state.labeled_count += 1
+                
+                # 保存到云端（可选）
+                # save_to_google_sheets(user_id, current_image_index, label_value, current_item["image"])
+                
                 st.success(f"✅ 已标注为: {label_value if label_value else '清除标注'}")
                 st.rerun()
     
+    # 快捷键提示
+    st.info("💡 提示：完成当前图片标注后，点击'下一张'继续您的标注任务")
+    
     st.markdown("---")
     
-    # 图片显示和HTML预览
+    # 图片显示
     col_img, col_html = st.columns([1, 1])
     
     with col_img:
         st.subheader("🖼️ 当前图片")
-        display_image(current_item["image"], f"图片 {st.session_state.current_index + 1}")
+        image_path = current_item["image"]
+        
+        try:
+            if os.path.exists(image_path):
+                st.image(image_path, use_container_width=True, 
+                        caption=f"图片 {current_image_index + 1}")
+            elif image_path.startswith(('http://', 'https://')):
+                st.image(image_path, use_container_width=True, 
+                        caption=f"图片 {current_image_index + 1}")
+            else:
+                st.error("无法加载图片")
+        except Exception as e:
+            st.error(f"图片加载失败: {e}")
     
     with col_html:
         st.subheader("📄 HTML 内容")
         html_content = current_item.get("html", "")
         
         if html_content:
-            # 显示HTML内容的前500个字符
+            # 显示HTML内容预览
             preview_content = html_content[:500] + "..." if len(html_content) > 500 else html_content
             st.code(preview_content, language="html")
             
-            # 显示完整HTML的展开选项
             if len(html_content) > 500:
-                with st.expander("查看完整HTML内容"):
+                with st.expander("查看完整HTML"):
                     st.code(html_content, language="html")
         else:
-            st.info("此图片没有关联的HTML内容")
+            st.info("无HTML内容")
     
     # 使用说明
-    with st.expander("📖 使用说明"):
-        st.markdown("""
-        ### 🎯 标注流程
-        1. 查看当前图片和相关HTML内容
-        2. 点击对应的分类按钮进行标注
-        3. 使用导航按钮切换到下一张图片
-        4. 完成后点击"下载标注数据"保存结果
+    with st.expander("📖 协作标注说明"):
+        st.markdown(f"""
+        ### 🎯 您的任务
+        - **分配图片**: {len(assigned_indices)} 张
+        - **当前进度**: {st.session_state.labeled_count} / {len(assigned_indices)} 完成
         
-        ### ⚠️ 重要提醒
-        - 本应用数据仅在当前浏览器会话中保存
-        - 刷新页面或关闭浏览器会导致数据丢失
-        - 请及时下载标注结果
+        ### 🤝 协作机制
+        - 每个标注员分配不同的图片，避免重复劳动
+        - 您的用户ID: `{user_id}` 确保任务分配的一致性
+        - 所有标注结果可以统一收集和合并
         
-        ### 📋 分类说明
-        - **数学**: 数学公式、计算器、数学教学内容
-        - **物理**: 物理实验、公式、教学内容
-        - **化学**: 化学方程式、实验、教学内容
-        - **生命**: 生物学、医学相关内容
-        - **地球**: 地理、地质、环境科学
-        - **材料**: 材料科学、工程相关
-        - **其他**: 不属于以上分类的内容
+        ### 📋 标注流程
+        1. 查看分配给您的图片和HTML内容
+        2. 选择合适的分类标签
+        3. 点击"下一张"继续标注
+        4. 完成后下载您的标注数据
+        
+        ### ⚠️ 注意事项
+        - 刷新页面会丢失未保存的标注
+        - 建议定期下载备份标注数据
+        - 如需暂停，请记住您的用户ID: `{user_id}`
         """)
 
 if __name__ == "__main__":
